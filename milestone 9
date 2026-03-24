@@ -1,0 +1,292 @@
+const Team = require('../models/Team');
+const TeamMember = require('../models/TeamMember');
+const User = require('../models/User');
+const ActivityLog = require('../models/ActivityLog');
+
+// @desc    Create new team (Team Leader+ only)
+// @route   POST /api/teams
+// @access  Private (TEAM_CREATE permission)
+const createTeam = async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    const creatorId = req.user.id;
+
+    // Input validation
+    if (!name || name.length < 3 || name.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Team name must be 3-100 characters'
+      });
+    }
+
+    // Check if user has permission
+    if (!req.userPermissions.includes('TEAM_CREATE')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Team creation permission required'
+      });
+    }
+
+    // 1. Create Team (owner = creator)
+    const team = await Team.create({
+      name: name.trim(),
+      description: description?.trim() || '',
+      owner: creatorId
+    });
+
+    // 2. Create TeamMember record (creator as leader)
+    const teamMember = await TeamMember.create({
+      user: creatorId,
+      team: team._id,
+      role: 'lead'  // Team Leader role
+    });
+
+    // 3. Update User's teams array
+    await User.findByIdAndUpdate(creatorId, {
+      $push: { teams: team._id }
+    });
+
+    // 4. Log activity
+    await ActivityLog.create({
+      user: creatorId,
+      team: team._id,
+      action: 'create',
+      targetType: 'Team',
+      targetId: team._id,
+      changes: [{
+        field: 'team',
+        oldValue: null,
+        newValue: team.name
+      }],
+      ipAddress: req.ip
+    });
+
+    // Populate owner for response
+    const populatedTeam = await Team.findById(team._id)
+      .populate('owner', 'fullName email avatar');
+
+    res.status(201).json({
+      success: true,
+      message: 'Team created successfully',
+       populatedTeam
+    });
+
+  } catch (error) {
+    console.error('Create team error:', error);
+    
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: 'Team name already exists'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Server error creating team'
+    });
+  }
+};
+
+// @desc    Get user's teams
+// @route   GET /api/teams
+const getMyTeams = async (req, res) => {
+  try {
+    const teams = await Team.find({
+      $or: [
+        { owner: req.user.id },
+        { members: req.user.id }
+      ]
+    })
+    .populate('owner members', 'fullName email avatar')
+    .sort({ updatedAt: -1 });
+
+    res.json({
+      success: true,
+      count: teams.length,
+       teams
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+module.exports = { createTeam, getMyTeams };
+const express = require('express');
+const { createTeam, getMyTeams } = require('../controllers/teamController');
+const { authenticateToken, requirePermission } = require('../middleware/auth');
+
+const router = express.Router();
+
+// GET user's teams (any authenticated)
+router.get('/', authenticateToken, getMyTeams);
+
+// POST create team (Team Leader/Admin only)
+router.post('/', 
+  authenticateToken, 
+  requirePermission('TEAM_CREATE'),
+  createTeam
+);
+
+module.exports = router;
+const teamRoutes = require('./routes/teams');
+app.use('/api/teams', teamRoutes);
+import React, { useState } from 'react';
+import apiClient from '../services/api';
+
+const CreateTeam = ({ onSuccess }) => {
+  const [formData, setFormData] = useState({
+    name: '',
+    description: ''
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+
+    try {
+      const response = await apiClient.post('/teams', formData);
+      onSuccess(response.data.data);
+      setFormData({ name: '', description: '' });
+    } catch (err) {
+      setError(err.message || 'Failed to create team');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="max-w-md mx-auto p-6 bg-white rounded-lg shadow-md">
+      <h2 className="text-2xl font-bold mb-6">Create New Team</h2>
+      
+      {error && (
+        <div className="p-3 mb-4 text-red-800 bg-red-100 rounded">{error}</div>
+      )}
+
+      <div className="mb-4">
+        <label className="block text-sm font-medium mb-2">Team Name *</label>
+        <input
+          type="text"
+          value={formData.name}
+          onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+          className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          placeholder="Project Alpha"
+          required
+          maxLength={100}
+        />
+      </div>
+
+      <div className="mb-6">
+        <label className="block text-sm font-medium mb-2">Description</label>
+        <textarea
+          value={formData.description}
+          onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+          rows={3}
+          className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+          placeholder="Team for web development projects..."
+          maxLength={500}
+        />
+      </div>
+
+      <button
+        type="submit"
+        disabled={loading || !formData.name.trim()}
+        className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-blue-500"
+      >
+        {loading ? 'Creating...' : 'Create Team'}
+      </button>
+    </form>
+  );
+};
+
+export default CreateTeam;
+import React, { useState, useEffect } from 'react';
+import { useAuth } from '../contexts/AuthContext';
+import ProtectedRoute from '../components/ProtectedRoute';
+import CreateTeam from '../components/CreateTeam';
+import apiClient from '../services/api';
+
+const Teams = () => {
+  const { user } = useAuth();
+  const [teams, setTeams] = useState([]);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchTeams();
+  }, []);
+
+  const fetchTeams = async () => {
+    try {
+      const response = await apiClient.get('/teams');
+      setTeams(response.data);
+    } catch (error) {
+      console.error('Failed to fetch teams:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTeamCreated = (newTeam) => {
+    setTeams(prev => [newTeam, ...prev]);
+    setShowCreateModal(false);
+  };
+
+  if (loading) return <div className="text-center py-12">Loading teams...</div>;
+
+  return (
+    <ProtectedRoute roles={['team_leader', 'admin']}>
+      <div className="p-8 max-w-7xl mx-auto">
+        <div className="flex justify-between items-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">My Teams</h1>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 font-medium"
+          >
+            + New Team
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {teams.map(team => (
+            <div key={team._id} className="bg-white border border-gray-200 rounded-xl p-6 hover:shadow-lg transition-shadow">
+              <h3 className="text-xl font-semibold text-gray-900 mb-2 truncate">{team.name}</h3>
+              <p className="text-gray-600 mb-4 line-clamp-2">{team.description}</p>
+              <div className="flex items-center justify-between text-sm text-gray-500">
+                <span>Code: {team.code}</span>
+                <span>{team.members?.length || 0} members</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b">
+              <h2 className="text-2xl font-bold">Create Team</h2>
+            </div>
+            <CreateTeam onSuccess={handleTeamCreated} />
+            <div className="p-6 border-t flex space-x-3">
+              <button
+                onClick={() => setShowCreateModal(false)}
+                className="flex-1 bg-gray-100 text-gray-900 py-3 px-4 rounded-lg hover:bg-gray-200"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </ProtectedRoute>
+  );
+};
+
+export default Teams; 
