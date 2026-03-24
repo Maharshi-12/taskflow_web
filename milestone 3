@@ -1,0 +1,365 @@
+1. User Model (models/User.js)
+javascript
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+
+const userSchema = new mongoose.Schema({
+  email: {
+    type: String,
+    required: [true, 'Email required'],
+    unique: true,
+    lowercase: true,
+    trim: true,
+    match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'Invalid email']
+  },
+  password: {
+    type: String,
+    required: [true, 'Password required'],
+    minlength: 8,
+    select: false  // Hide from queries by default
+  },
+  fullName: {
+    type: String,
+    required: [true, 'Full name required'],
+    trim: true,
+    maxlength: 50
+  },
+  role: {
+    type: String,
+    enum: ['admin', 'manager', 'member', 'guest'],
+    default: 'member'
+  },
+  avatar: String,
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  preferences: {
+    notifications: {
+      type: Boolean,
+      default: true
+    },
+    theme: {
+      type: String,
+      enum: ['light', 'dark'],
+      default: 'light'
+    }
+  },
+  teams: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Team'
+  }]
+}, {
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+// Virtual for full profile
+userSchema.virtual('profileUrl').get(function() {
+  return `/api/users/${this._id}/profile`;
+});
+
+// Password hashing middleware
+userSchema.pre('save', async function(next) {
+  if (!this.isModified('password')) return next();
+  this.password = await bcrypt.hash(this.password, 12);
+  next();
+});
+
+// Index for fast queries
+userSchema.index({ email: 1 });
+userSchema.index({ fullName: 'text', email: 'text' });
+
+module.exports = mongoose.model('User', userSchema);
+2. Team Model (models/Team.js)
+javascript
+const mongoose = require('mongoose');
+const shortid = require('shortid');
+
+const teamSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: [true, 'Team name required'],
+    trim: true,
+    maxlength: 100
+  },
+  code: {
+    type: String,
+    unique: true,
+    uppercase: true,
+    default: function() {
+      return 'T' + shortid.generate().toUpperCase().slice(0, 6);
+    }
+  },
+  description: {
+    type: String,
+    trim: true,
+    maxlength: 500
+  },
+  owner: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  isPrivate: {
+    type: Boolean,
+    default: false
+  },
+  settings: {
+    autoAssign: {
+      type: Boolean,
+      default: false
+    },
+    defaultPriority: {
+      type: String,
+      enum: ['low', 'medium', 'high'],
+      default: 'medium'
+    }
+  }
+}, {
+  timestamps: true
+});
+
+teamSchema.index({ name: 'text', description: 'text' });
+teamSchema.index({ owner: 1, isPrivate: 1 });
+teamSchema.index({ code: 1 });
+
+module.exports = mongoose.model('Team', teamSchema);
+3. TeamMember Junction (models/TeamMember.js)
+javascript
+const mongoose = require('mongoose');
+
+const teamMemberSchema = new mongoose.Schema({
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  team: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Team',
+    required: true
+  },
+  role: {
+    type: String,
+    enum: ['owner', 'admin', 'lead', 'member'],
+    default: 'member'
+  },
+  permissions: [{
+    type: String,
+    enum: ['manage_tasks', 'invite_members', 'delete_team']
+  }],
+  joinedAt: {
+    type: Date,
+    default: Date.now
+  },
+  lastActive: {
+    type: Date,
+    default: Date.now
+  }
+}, {
+  timestamps: true
+});
+
+// Prevent duplicate memberships
+teamMemberSchema.index({ user: 1, team: 1 }, { unique: true });
+teamMemberSchema.index({ team: 1, role: 1 });
+
+module.exports = mongoose.model('TeamMember', teamMemberSchema);
+4. Task Model (models/Task.js)
+javascript
+const mongoose = require('mongoose');
+
+const taskSchema = new mongoose.Schema({
+  title: {
+    type: String,
+    required: [true, 'Task title required'],
+    trim: true,
+    maxlength: 200
+  },
+  description: {
+    type: String,
+    trim: true
+  },
+  status: {
+    type: String,
+    enum: ['backlog', 'todo', 'in-progress', 'review', 'done', 'blocked'],
+    default: 'todo'
+  },
+  priority: {
+    type: String,
+    enum: ['lowest', 'low', 'medium', 'high', 'highest'],
+    default: 'medium'
+  },
+  team: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Team',
+    required: true
+  },
+  assignee: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  reporter: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  labels: [{
+    type: String,
+    maxlength: 20
+  }],
+  dueDate: Date,
+  estimatedEffort: {
+    type: Number,
+    min: 0,
+    default: 1
+  },
+  storyPoints: {
+    type: Number,
+    enum: [1, 2, 3, 5, 8, 13],
+    default: 3
+  },
+  parentTask: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Task'
+  },
+  dependencies: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Task'
+  }]
+}, {
+  timestamps: true
+});
+
+// Compound indexes for common queries
+taskSchema.index({ team: 1, status: 1, priority: -1 });
+taskSchema.index({ assignee: 1, status: 1 });
+taskSchema.index({ dueDate: 1 });
+taskSchema.index({ 'labels': 1 });
+
+module.exports = mongoose.model('Task', taskSchema);
+5. Comment Model (models/Comment.js)
+javascript
+const mongoose = require('mongoose');
+
+const commentSchema = new mongoose.Schema({
+  task: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Task',
+    required: true,
+    index: true
+  },
+  author: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  content: {
+    type: String,
+    required: [true, 'Comment content required'],
+    trim: true,
+    maxlength: [2000, 'Comment too long']
+  },
+  mentions: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+  attachments: [{
+    filename: String,
+    url: String,
+    size: Number,
+    mimeType: String
+  }],
+  parentComment: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Comment'
+  },
+  isEdited: {
+    type: Boolean,
+    default: false
+  }
+}, {
+  timestamps: true
+});
+
+commentSchema.index({ task: 1, createdAt: -1 });
+commentSchema.index({ author: 1 });
+
+module.exports = mongoose.model('Comment', commentSchema);
+6. ActivityLog Model (models/ActivityLog.js)
+javascript
+const mongoose = require('mongoose');
+
+const activityLogSchema = new mongoose.Schema({
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  team: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Team'
+  },
+  resource: {
+    type: {
+      type: String,
+      enum: ['User', 'Team', 'Task', 'Comment', 'TeamMember']
+    },
+    id: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true
+    }
+  },
+  action: {
+    type: String,
+    enum: ['create', 'update', 'delete', 'assign', 'comment', 'login'],
+    required: true
+  },
+  changes: [{
+    field: String,
+    oldValue: mongoose.Schema.Types.Mixed,
+    newValue: mongoose.Schema.Types.Mixed
+  }],
+  ipAddress: {
+    type: String,
+    trim: true
+  },
+  userAgent: String,
+  severity: {
+    type: String,
+    enum: ['info', 'warning', 'error'],
+    default: 'info'
+  }
+}, {
+  timestamps: true
+});
+
+// TTL index: Delete logs after 90 days
+activityLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7776000 });
+activityLogSchema.index({ team: 1, createdAt: -1 });
+activityLogSchema.index({ user: 1, action: 1 });
+
+module.exports = mongoose.model('ActivityLog', activityLogSchema);
+Usage with Population (server.js)
+javascript
+// Import all models
+const User = require('./models/User');
+const Team = require('./models/Team');
+// ... etc
+
+// Example queries with population
+app.get('/api/teams/:id', async (req, res) => {
+  const team = await Team.findById(req.params.id)
+    .populate('owner', 'fullName email avatar')
+    .populate({
+      path: 'tasks',
+      match: { status: 'todo' },
+      populate: {
+        path: 'assignee reporter',
+        select: 'fullName avatar'
+      }
+    });
+  res.json(team);
+});
