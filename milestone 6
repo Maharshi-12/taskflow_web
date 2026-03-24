@@ -1,0 +1,182 @@
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const ActivityLog = require('../models/ActivityLog');
+
+// Main authentication middleware
+const authenticateToken = async (req, res, next) => {
+  try {
+    let token;
+
+    // 1. Check Authorization header: Bearer <token>
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+    // 2. Fallback: HttpOnly cookie
+    else if (req.cookies && req.cookies.access_token) {
+      token = req.cookies.access_token;
+    }
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Access token required'
+      });
+    }
+
+    // 3. Verify JWT
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // 4. Fetch fresh user data (not from token)
+    const user = await User.findById(decoded.userId)
+      .select('-password')  // Exclude sensitive fields
+      .lean();  // Faster than full Mongoose doc
+
+    if (!user || !user.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'User not found or inactive'
+      });
+    }
+
+    // 5. Attach user to request
+    req.user = {
+      id: user._id,
+      email: user.email,
+      fullName: user.fullName,
+      role: user.role,
+      avatar: user.avatar,
+      teams: user.teams
+    };
+
+    // 6. Log activity (optional, low overhead)
+    await ActivityLog.create({
+      user: user._id,
+      action: 'access',
+      targetType: req.path.split('/')[2] || 'api',
+      targetId: req.params.id || null,
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent'),
+      severity: 'info'
+    });
+
+    next();
+
+  } catch (error) {
+    console.error('Auth middleware error:', error.message);
+
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Token expired. Please login again.'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Authentication server error'
+    });
+  }
+};
+
+// Role-based authorization middleware
+const authorizeRoles = (...roles) => {
+  return (req, res, next) => {
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: 
+      });
+    }
+    next();
+  };
+};
+
+// Admin-only middleware
+const adminOnly = authorizeRoles('admin');
+
+module.exports = {
+  authenticateToken,
+  authorizeRoles,
+  adminOnly
+};
+const express = require('express');
+const { authenticateToken, authorizeRoles, adminOnly } = require('../middleware/auth');
+const Task = require('../models/Task');
+
+const router = express.Router();
+
+// All authenticated users
+router.get('/me', authenticateToken, (req, res) => {
+  res.json({
+    success: true,
+    user: req.user
+  });
+});
+
+// Manager+ roles only
+router.get('/tasks', authenticateToken, authorizeRoles('manager', 'admin'), async (req, res) => {
+  const tasks = await Task.find({ team: { $in: req.user.teams } });
+  res.json(tasks);
+});
+
+// Admin only
+router.delete('/users/:id', authenticateToken, adminOnly, async (req, res) => {
+  // Delete logic
+  res.json({ success: true });
+});
+
+module.exports = router;
+// Add cookie-parser for HttpOnly cookies
+const cookieParser = require('cookie-parser');
+app.use(cookieParser());
+
+// Mount protected routes
+const protectedRoutes = require('./routes/protected');
+app.use('/api', protectedRoutes);
+// Login response → store token
+const login = async (email, password) => {
+  const response = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',  // Sends cookies
+    body: JSON.stringify({ email, password })
+  });
+  const data = await response.json();
+  return data.data.token;  // Use in localStorage or let cookie handle
+};
+
+// Protected API call
+const fetchTasks = async () => {
+  const response = await fetch('/api/tasks', {
+    headers: {
+      'Authorization': Bearer ${token},  // OR rely on cookie
+    },
+    credentials: 'include'
+  });
+  return response.json();
+};
+# 1. Login first (get token)
+TOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"john@example.com","password":"SecurePass123!"}' | jq -r '.data.token')
+
+# 2. Test protected route
+curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/api/me
+
+# 3. Test invalid token
+curl -H "Authorization: Bearer invalidtoken" http://localhost:3000/api/me
+{
+  "success": true,
+  "user": {
+    "id": "65f...",
+    "email": "john@example.com",
+    "fullName": "John Doe",
+    "role": "member"
+  }
+}
