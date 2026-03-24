@@ -1,0 +1,255 @@
+const mongoose = require('mongoose');
+
+const permissionSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    unique: true,
+    uppercase: true
+  },
+  description: String,
+  resource: {
+    type: String,
+    enum: ['user', 'team', 'task', 'comment', 'teamMember'],
+    required: true
+  },
+  action: {
+    type: String,
+    enum: ['create', 'read', 'update', 'delete', 'manage'],
+    required: true
+  }
+}, { timestamps: true });
+
+module.exports = mongoose.model('Permission', permissionSchema);
+const mongoose = require('mongoose');
+
+const permissionSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    unique: true,
+    uppercase: true
+  },
+  description: String,
+  resource: {
+    type: String,
+    enum: ['user', 'team', 'task', 'comment', 'teamMember'],
+    required: true
+  },
+  action: {
+    type: String,
+    enum: ['create', 'read', 'update', 'delete', 'manage'],
+    required: true
+  }
+}, { timestamps: true });
+
+module.exports = mongoose.model('Permission', permissionSchema);
+const mongoose = require('mongoose');
+
+const permissionSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    unique: true,
+    uppercase: true
+  },
+  description: String,
+  resource: {
+    type: String,
+    enum: ['user', 'team', 'task', 'comment', 'teamMember'],
+    required: true
+  },
+  action: {
+    type: String,
+    enum: ['create', 'read', 'update', 'delete', 'manage'],
+    required: true
+  }
+}, { timestamps: true });
+
+module.exports = mongoose.model('Permission', permissionSchema);
+const mongoose = require('mongoose');
+
+const roleSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    unique: true,
+    enum: ['admin', 'team_leader', 'member']
+  },
+  description: String,
+  permissions: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Permission'
+  }],
+  isSystemRole: {
+    type: Boolean,
+    default: false
+  }
+}, { timestamps: true });
+
+roleSchema.index({ name: 1 });
+module.exports = mongoose.model('Role', roleSchema);
+// Add to your User schema
+role: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: 'Role',
+  required: true,
+  default: 'member_role_id'  // Set after seeding
+}
+// seed/roles.js
+const Permission = require('../models/Permission');
+const Role = require('../models/Role');
+
+const seedRBAC = async () => {
+  // Permissions
+  const perms = await Permission.insertMany([
+    { name: 'USER_READ', resource: 'user', action: 'read', description: 'View user profile' },
+    { name: 'USER_UPDATE', resource: 'user', action: 'update', description: 'Update own profile' },
+    { name: 'TEAM_CREATE', resource: 'team', action: 'create', description: 'Create team' },
+    { name: 'TEAM_READ', resource: 'team', action: 'read' },
+    { name: 'TEAM_UPDATE', resource: 'team', action: 'update' },
+    { name: 'TEAM_DELETE', resource: 'team', action: 'delete' },
+    { name: 'TASK_CREATE', resource: 'task', action: 'create' },
+    { name: 'TASK_READ', resource: 'task', action: 'read' },
+    { name: 'TASK_UPDATE', resource: 'task', action: 'update' },
+    { name: 'TASK_DELETE', resource: 'task', action: 'delete' },
+    { name: 'TEAM_MEMBER_MANAGE', resource: 'teamMember', action: 'manage' }
+  ]);
+
+  // Roles with permissions
+  const adminPerms = perms.map(p => p._id);
+  const leaderPerms = perms.slice(2, 11);  // Exclude user perms
+  const memberPerms = [perms[7], perms[8]]; // Only task read/update
+
+  await Role.insertMany([
+    { name: 'admin', permissions: adminPerms, description: 'Full access', isSystemRole: true },
+    { name: 'team_leader', permissions: leaderPerms, description: 'Team management', isSystemRole: true },
+    { name: 'member', permissions: memberPerms, description: 'Basic task access', isSystemRole: true }
+  ]);
+
+  console.log('✅ RBAC seeded successfully');
+  process.exit();
+};
+
+seedRBAC();
+const Role = require('../models/Role');
+
+// In authenticateToken, after finding user:
+const userRole = await Role.findById(user.role).populate('permissions');
+req.userPermissions = userRole.permissions.map(p => p.name);
+req.userRole = userRole.name;
+
+const Permission = require('../models/Permission');
+
+// Check specific permissions
+const requirePermission = (permissionName) => {
+  return (req, res, next) => {
+    if (!req.userPermissions.includes(permissionName)) {
+      return res.status(403).json({
+        success: false,
+        message: Permission "${permissionName}" required,
+        requiredRole: req.userRole
+      });
+    }
+    next();
+  };
+};
+
+// Role hierarchy check (Admin > Leader > Member)
+const requireRoleLevel = (minRole) => {
+  const roleOrder = { member: 1, team_leader: 2, admin: 3 };
+  return (req, res, next) => {
+    if (roleOrder[req.userRole] < roleOrder[minRole]) {
+      return res.status(403).json({
+        success: false,
+        message: Role "${minRole}" or higher required
+      });
+    }
+    next();
+  };
+};
+
+module.exports = {
+  requirePermission,
+  requireRoleLevel
+};
+const Permission = require('../models/Permission');
+
+// Check specific permissions
+const requirePermission = (permissionName) => {
+  return (req, res, next) => {
+    if (!req.userPermissions.includes(permissionName)) {
+      return res.status(403).json({
+        success: false,
+        message: Permission "${permissionName}" required,
+        requiredRole: req.userRole
+      });
+    }
+    next();
+  };
+};
+
+// Role hierarchy check (Admin > Leader > Member)
+const requireRoleLevel = (minRole) => {
+  const roleOrder = { member: 1, team_leader: 2, admin: 3 };
+  return (req, res, next) => {
+    if (roleOrder[req.userRole] < roleOrder[minRole]) {
+      return res.status(403).json({
+        success: false,
+        message: Role "${minRole}" or higher required
+      });
+    }
+    next();
+  };
+};
+
+module.exports = {
+  requirePermission,
+  requireRoleLevel
+};
+const express = require('express');
+const { authenticateToken } = require('../middleware/auth');
+const { requirePermission, requireRoleLevel } = require('../middleware/permissions');
+const Team = require('../models/Team');
+
+const router = express.Router();
+
+// All authenticated users can read own teams
+router.get('/', authenticateToken, async (req, res) => {
+  const teams = await Team.find({ 
+    $or: [{ owner: req.user.id }, { members: req.user.id }] 
+  });
+  res.json(teams);
+});
+
+// Only team leaders/admins can create
+router.post('/', 
+  authenticateToken,
+  requirePermission('TEAM_CREATE'),
+  async (req, res) => {
+    const team = await Team.create({
+      ...req.body,
+      owner: req.user.id
+    });
+    res.status(201).json(team);
+  }
+);
+
+// Update own team (owner check)
+router.put('/:id', 
+  authenticateToken,
+  requirePermission('TEAM_UPDATE'),
+  async (req, res) => {
+    const team = await Team.findOneAndUpdate(
+      { _id: req.params.id, owner: req.user.id },
+      req.body,
+      { new: true }
+    );
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found or not authorized' });
+    }
+    res.json(team);
+  }
+);
+
+module.exports = router;
