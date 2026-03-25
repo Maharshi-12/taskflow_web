@@ -1,0 +1,41 @@
+const Task = require('../models/Task');
+const TeamMember = require('../models/TeamMember');
+const User = require('../models/User');
+const Team = require('../models/Team');
+const ActivityLog = require('../models/ActivityLog');
+
+// @desc    Assign/Reassign task to team member (Team Leader+)
+// @route   PATCH /api/tasks/:taskId/assign
+// @access  Private (TASK_UPDATE permission)
+const assignTask = async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { assigneeEmail } = req.body;
+    const assignerId = req.user.id;
+
+    // 1. Find task
+    const task = await Task.findById(taskId).populate('team');
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: 'Task not found'
+      });
+    }
+
+    // 2. Verify team access
+    const isTeamMember = await TeamMember.findOne({
+      team: task.team._id,
+      user: assignerId
+    });
+    if (!isTeamMember && task.team.owner.toString() !== assignerId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied to this team'
+      });
+    }
+
+    // 3. Find assignee
+    let assigneeId = null;
+    let assigneeName = null;
+
+    if (assigneeEmail)
