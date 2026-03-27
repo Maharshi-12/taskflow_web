@@ -1,0 +1,169 @@
+/ models/Task.js
+const mongoose = require('mongoose');
+
+const taskSchema = new mongoose.Schema(
+  {
+    title: { type: String, required: true, trim: true },
+    description: { type: String, trim: true },
+    team: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
+    assignee: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    status: {
+      type: String,
+      enum: ['Pending', 'In Progress', 'Completed'],
+      default: 'Pending'
+    }
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model('Task', taskSchema);
+// middleware/canUpdateTaskStatus.js
+const Task = require('../models/Task');
+
+const canUpdateTaskStatus = async (req, res, next) => {
+  try {
+    const { taskId } = req.params;
+    const userId = req.user.id;
+    const userRoles = req.user.roles || [];
+    const userPermissions = req.user.permissions || [];
+
+    const task = await Task.findById(taskId);
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: 'Task not found'
+      });
+    }
+
+    req.task = task;
+
+    const hasPrivilegedRole =
+      userRoles.includes('Admin') || userRoles.includes('Project Manager');
+
+    const hasTaskUpdatePermission =
+      userPermissions.includes('TASK_UPDATE');
+
+    const isAssignee =
+      task.assignee && task.assignee.toString() === userId;
+
+    if ((hasPrivilegedRole && hasTaskUpdatePermission) || isAssignee) {
+      return next();
+    }
+
+    return res.status(403).json({
+      success: false,
+      message: 'You are not allowed to update this task status'
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Authorization check failed'
+    });
+  }
+};
+
+module.exports = canUpdateTaskStatus;
+// controllers/taskController.js
+const updateTaskStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    const task = req.task;
+
+    const allowedStatuses = ['Pending', 'In Progress', 'Completed'];
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid task status'
+      });
+    }
+
+    task.status = status;
+    await task.save();
+
+    const updatedTask = await task.populate('assignee', 'fullName email');
+
+    return res.json({
+      success: true,
+      message: 'Task status updated successfully',
+      data: updatedTask
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update task status'
+    });
+  }
+};
+
+module.exports = {
+  updateTaskStatus
+};
+await Task.findByIdAndUpdate(
+  taskId,
+  { status },
+  { new: true, runValidators: true }
+);
+// routes/taskRoutes.js
+const express = require('express');
+const router = express.Router();
+
+const { authenticateToken } = require('../middleware/auth');
+const canUpdateTaskStatus = require('../middleware/canUpdateTaskStatus');
+const { updateTaskStatus } = require('../controllers/taskController');
+
+router.patch(
+  '/tasks/:taskId/status',
+  authenticateToken,
+  canUpdateTaskStatus,
+  updateTaskStatus
+);
+
+module.exports = router;
+// components/MyTaskStatusSelect.jsx
+import { useState } from 'react';
+import api from '../services/api';
+
+export default function MyTaskStatusSelect({ task, currentUser, onUpdated }) {
+  const [loading, setLoading] = useState(false);
+
+  const roles = currentUser.roles || [];
+  const canManageAll =
+    roles.includes('Admin') || roles.includes('Project Manager');
+
+  const isAssignee = task.assignee?._id === currentUser.id;
+  const canChangeStatus = canManageAll || isAssignee;
+
+  const handleChange = async (e) => {
+    const nextStatus = e.target.value;
+    setLoading(true);
+
+    try {
+      const res = await api.patch(/tasks/${task._id}/status, {
+        status: nextStatus
+      });
+
+      onUpdated(res.data.data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!canChangeStatus) {
+    return <span>{task.status}</span>;
+  }
+
+  return (
+    <select
+      value={task.status}
+      onChange={handleChange}
+      disabled={loading}
+    >
+      <option value="Pending">Pending</option>
+      <option value="In Progress">In Progress</option>
+      <option value="Completed">Completed</option>
+    </select>
+  );
+}
