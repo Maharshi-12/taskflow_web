@@ -1,0 +1,154 @@
+// utils/taskDateUtils.js
+export const isTaskOverdue = (task) => {
+  if (!task.deadline) return false;
+  if (task.status === 'Completed') return false;
+
+  const now = new Date();
+  const deadline = new Date(task.deadline);
+
+  return deadline.getTime() < now.getTime();
+};
+
+export const formatDeadlineLabel = (task) => {
+  if (!task.deadline) return 'No deadline';
+
+  const deadline = new Date(task.deadline);
+  const isOverdue = task.status !== 'Completed' && deadline.getTime() < Date.now();
+
+  return isOverdue
+    ? Overdue · ${deadline.toLocaleDateString()}
+    : Due · ${deadline.toLocaleDateString()};
+};
+// components/TaskCard.jsx
+import React from 'react';
+import { isTaskOverdue, formatDeadlineLabel } from '../utils/taskDateUtils';
+
+const statusColors = {
+  Pending: 'bg-slate-100 text-slate-700 border-slate-200',
+  'In Progress': 'bg-amber-100 text-amber-800 border-amber-200',
+  Completed: 'bg-emerald-100 text-emerald-800 border-emerald-200'
+};
+
+export default function TaskCard({ task, onStatusChange }) {
+  const overdue = isTaskOverdue(task);
+
+  return (
+    <article
+      className={[
+        'rounded-xl border p-4 shadow-sm transition-all',
+        overdue
+          ? 'border-red-300 bg-red-50/70 shadow-red-100'
+          : 'border-slate-200 bg-white'
+      ].join(' ')}
+    >
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="space-y-2">
+          <h3 className="text-base font-semibold text-slate-900">
+            {task.title}
+          </h3>
+
+          {overdue && (
+            <span className="inline-flex rounded-full border border-red-200 bg-red-100 px-2.5 py-1 text-xs font-semibold text-red-700">
+              Overdue
+            </span>
+          )}
+        </div>
+
+        <span
+          className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
+            statusColors[task.status]
+          }`}
+        >
+          {task.status}
+        </span>
+      </div>
+
+      {task.description && (
+        <p className="mb-4 text-sm leading-6 text-slate-600">
+          {task.description}
+        </p>
+      )}
+
+      <div className="mb-4 flex flex-wrap gap-2 text-xs">
+        {task.priority && (
+          <span className="rounded-md bg-slate-100 px-2 py-1 text-slate-600">
+            Priority: {task.priority}
+          </span>
+        )}
+
+        {task.assignee?.fullName && (
+          <span className="rounded-md bg-slate-100 px-2 py-1 text-slate-600">
+            Assignee: {task.assignee.fullName}
+          </span>
+        )}
+
+        {task.deadline && (
+          <span
+            className={`rounded-md px-2 py-1 ${
+              overdue
+                ? 'bg-red-100 text-red-700'
+                : 'bg-slate-100 text-slate-600'
+            }`}
+          >
+            {formatDeadlineLabel(task)}
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between">
+        <label className="text-sm font-medium text-slate-700">
+          Status
+        </label>
+
+        <select
+          value={task.status}
+          onChange={(e) => onStatusChange(task._id, e.target.value)}
+          className={`rounded-lg border bg-white px-3 py-2 text-sm outline-none ${
+            overdue
+              ? 'border-red-300 text-red-700 focus:border-red-500'
+              : 'border-slate-300 text-slate-700 focus:border-teal-600'
+          }`}
+        >
+          <option value="Pending">Pending</option>
+          <option value="In Progress">In Progress</option>
+          <option value="Completed">Completed</option>
+        </select>
+      </div>
+    </article>
+  );
+}
+// inside TaskDashboard.jsx
+import { useMemo } from 'react';
+import { isTaskOverdue } from '../utils/taskDateUtils';
+
+const overdueCount = useMemo(() => {
+  return tasks.filter(isTaskOverdue).length;
+}, [tasks]);
+<section className="rounded-2xl bg-white p-5 shadow-sm">
+  <div className="flex flex-wrap items-center justify-between gap-4">
+    <div>
+      <h1 className="text-2xl font-bold text-slate-900">Task Dashboard</h1>
+      <p className="text-sm text-slate-600">
+        Track progress and monitor approaching deadlines.
+      </p>
+    </div>
+
+    <div className="flex items-center gap-3">
+      <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+        <p className="text-xs font-medium uppercase tracking-wide text-red-600">
+          Overdue tasks
+        </p>
+        <p className="text-2xl font-bold text-red-700">{overdueCount}</p>
+      </div>
+    </div>
+  </div>
+</section>
+const sortedTasks = [...tasks].sort((a, b) => {
+  const aOverdue = isTaskOverdue(a);
+  const bOverdue = isTaskOverdue(b);
+
+  if (aOverdue && !bOverdue) return -1;
+  if (!aOverdue && bOverdue) return 1;
+
+  return 0;
+});
