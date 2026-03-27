@@ -1,0 +1,156 @@
+// models/Task.js
+const mongoose = require('mongoose');
+
+const taskSchema = new mongoose.Schema(
+  {
+    title: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 200
+    },
+    description: {
+      type: String,
+      trim: true,
+      maxlength: 2000
+    },
+    priority: {
+      type: String,
+      enum: ['Low', 'Medium', 'High'],
+      default: 'Medium'
+    },
+    deadline: {
+      type: Date
+    },
+    team: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Team',
+      required: true
+    },
+    assignee: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null
+    },
+    status: {
+      type: String,
+      enum: ['Pending', 'In Progress', 'Completed'],
+      default: 'Pending'
+    }
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model('Task', taskSchema);
+// controllers/taskController.js
+const Task = require('../models/Task');
+const TeamMember = require('../models/TeamMember');
+
+const updateTaskStatus = async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { status } = req.body;
+    const userId = req.user.id;
+
+    const allowedStatuses = ['Pending', 'In Progress', 'Completed'];
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid task status'
+      });
+    }
+
+    const task = await Task.findById(taskId);
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: 'Task not found'
+      });
+    }
+
+    const membership = await TeamMember.findOne({
+      team: task.team,
+      user: userId
+    });
+
+    if (!membership) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+
+    task.status = status;
+    await task.save();
+
+    const updatedTask = await Task.findById(task._id)
+      .populate('team', 'name code')
+      .populate('assignee', 'fullName email');
+
+    return res.json({
+      success: true,
+      message: 'Task status updated successfully',
+      data: updatedTask
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Server error updating task status'
+    });
+  }
+};
+
+module.exports = {
+  updateTaskStatus
+};
+// routes/tasks.js
+const express = require('express');
+const router = express.Router();
+
+const { updateTaskStatus } = require('../controllers/taskController');
+const { authenticateToken } = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
+
+router.patch(
+  '/:taskId/status',
+  authenticateToken,
+  requirePermission('TASK_UPDATE'),
+  updateTaskStatus
+);
+
+module.exports = router;
+// services/taskApi.js
+import apiClient from './api';
+
+export const updateTaskStatus = async (taskId, status) => {
+  return apiClient.patch(/tasks/${taskId}/status, { status });
+};
+// components/TaskStatusSelect.jsx
+import React from 'react';
+import { updateTaskStatus } from '../services/taskApi';
+
+const TaskStatusSelect = ({ task, onStatusUpdated }) => {
+  const handleChange = async (e) => {
+    try {
+      const res = await updateTaskStatus(task._id, e.target.value);
+      onStatusUpdated(res.data);
+    } catch (err) {
+      console.error('Failed to update task status', err);
+    }
+  };
+
+  return (
+    <select
+      value={task.status}
+      onChange={handleChange}
+      className="border rounded-lg px-3 py-2"
+    >
+      <option value="Pending">Pending</option>
+      <option value="In Progress">In Progress</option>
+      <option value="Completed">Completed</option>
+    </select>
+  );
+};
+
+export default TaskStatusSelect;
