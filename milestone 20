@@ -1,0 +1,252 @@
+// models/Task.js
+const mongoose = require('mongoose');
+
+const commentSchema = new mongoose.Schema(
+  {
+    author: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    message: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 2000
+    }
+  },
+  { timestamps: true }
+);
+
+const taskSchema = new mongoose.Schema(
+  {
+    title: { type: String, required: true, trim: true },
+    description: { type: String, trim: true },
+    status: {
+      type: String,
+      enum: ['Pending', 'In Progress', 'Completed'],
+      default: 'Pending'
+    },
+    team: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Team',
+      required: true
+    },
+    assignee: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null
+    },
+    deadline: {
+      type: Date
+    },
+    comments: [commentSchema]
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model('Task', taskSchema);
+// middleware/canCommentOnTask.js
+const Task = require('../models/Task');
+const TeamMember = require('../models/TeamMember');
+
+const canCommentOnTask = async (req, res, next) => {
+  try {
+    const { taskId } = req.params;
+    const userId = req.user.id;
+
+    const task = await Task.findById(taskId);
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: 'Task not found'
+      });
+    }
+
+    const membership = await TeamMember.findOne({
+      team: task.team,
+      user: userId
+    });
+
+    if (!membership) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only team members can comment on this task'
+      });
+    }
+
+    req.task = task;
+    next();
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Authorization failed'
+    });
+  }
+};
+
+module.exports = canCommentOnTask;
+// controllers/taskCommentController.js
+const addCommentToTask = async (req, res) => {
+  try {
+    const { message } = req.body;
+    const task = req.task;
+    const userId = req.user.id;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Comment message is required'
+      });
+    }
+
+    task.comments.push({
+      author: userId,
+      message: message.trim()
+    });
+
+    await task.save();
+
+    const updatedTask = await task.populate([
+      { path: 'assignee', select: 'fullName email' },
+      { path: 'comments.author', select: 'fullName email' }
+    ]);
+
+    return res.status(201).json({
+      success: true,
+      message: 'Comment added successfully',
+      data: updatedTask
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to add comment'
+    });
+  }
+};
+
+module.exports = {
+  addCommentToTask
+};
+// routes/taskRoutes.js
+const express = require('express');
+const router = express.Router();
+
+const { authenticateToken } = require('../middleware/auth');
+const canCommentOnTask = require('../middleware/canCommentOnTask');
+const { addCommentToTask } = require('../controllers/taskCommentController');
+
+router.post(
+  '/tasks/:taskId/comments',
+  authenticateToken,
+  canCommentOnTask,
+  addCommentToTask
+);
+
+module.exports = router;
+// components/TaskComments.jsx
+import React, { useState } from 'react';
+import api from '../services/api';
+
+export default function TaskComments({ task, onTaskUpdated }) {
+  const [message, setMessage] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    if (!message.trim()) return;
+
+    try {
+      setSubmitting(true);
+
+      const res = await api.post(/tasks/${task._id}/comments, {
+        message
+      });
+
+      onTaskUpdated(res.data.data);
+      setMessage('');
+    } catch (error) {
+      console.error('Failed to add comment', error);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-4">
+        <h3 className="text-lg font-semibold text-slate-900">Discussion</h3>
+        <p className="text-sm text-slate-600">
+          Collaborate with your team directly on this task.
+        </p>
+      </div>
+
+      <div className="mb-5 space-y-3">
+        {task.comments?.length ? (
+          task.comments.map((comment) => (
+            <article
+              key={comment._id}
+              className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+            >
+              <div className="mb-1 flex items-center justify-between gap-3">
+                <span className="text-sm font-semibold text-slate-800">
+                  {comment.author?.fullName || 'Team member'}
+                </span>
+                <span className="text-xs text-slate-500">
+                  {new Date(comment.createdAt).toLocaleString()}
+                </span>
+              </div>
+              <p className="text-sm leading-6 text-slate-700">
+                {comment.message}
+              </p>
+            </article>
+          ))
+        ) : (
+          <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+            No comments yet. Start the discussion.
+          </div>
+        )}
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <label className="block text-sm font-medium text-slate-700">
+          Add comment
+        </label>
+
+        <textarea
+          rows={4}
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          placeholder="Write an update, question, or suggestion..."
+          className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-teal-600"
+        />
+
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={submitting || !message.trim()}
+            className="rounded-xl bg-teal-700 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting ? 'Posting...' : 'Post Comment'}
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+// example usage inside TaskDetails.jsx
+import TaskComments from './TaskComments';
+
+export default function TaskDetails({ task, onTaskUpdated }) {
+  return (
+    <div className="space-y-6">
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-xl font-bold text-slate-900">{task.title}</h2>
+        <p className="mt-2 text-sm text-slate-600">{task.description}</p>
+      </section>
+
+      <TaskComments task={task} onTaskUpdated={onTaskUpdated} />
+    </div>
+  );
+}
