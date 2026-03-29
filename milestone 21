@@ -1,0 +1,400 @@
+/ models/ActivityLog.js
+const mongoose = require('mongoose');
+
+const activityLogSchema = new mongoose.Schema(
+  {
+    task: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Task',
+      required: true,
+      index: true
+    },
+    actor: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    actionType: {
+      type: String,
+      enum: [
+        'TASK_CREATED',
+        'TASK_UPDATED',
+        'STATUS_CHANGED',
+        'COMMENT_ADDED'
+      ],
+      required: true
+    },
+    message: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {}
+    }
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model('ActivityLog', activityLogSchema);
+// utils/logTaskActivity.js
+const ActivityLog = require('../models/ActivityLog');
+
+const logTaskActivity = async ({
+  taskId,
+  actorId,
+  actionType,
+  message,
+  metadata = {}
+}) => {
+  await ActivityLog.create({
+    task: taskId,
+    actor: actorId,
+    actionType,
+    message,
+    metadata
+  });
+};
+
+module.exports = logTaskActivity;
+// controllers/taskController.js
+const Task = require('../models/Task');
+const logTaskActivity = require('../utils/logTaskActivity');
+
+const updateTaskStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    const task = req.task;
+    const actorId = req.user.id;
+
+    const allowedStatuses = ['Pending', 'In Progress', 'Completed'];
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid task status'
+      });
+    }
+
+    const previousStatus = task.status;
+    task.status = status;
+    await task.save();
+
+    if (previousStatus !== status) {
+      await logTaskActivity({
+        taskId: task._id,
+        actorId,
+        actionType: 'STATUS_CHANGED',
+        message: Changed status from "${previousStatus}" to "${status}",
+        metadata: {
+          previousStatus,
+          newStatus: status
+        }
+      });
+    }
+
+    const updatedTask = await Task.findById(task._id)
+      .populate('assignee', 'fullName email');
+
+    return res.json({
+      success: true,
+      message: 'Task status updated successfully',
+      data: updatedTask
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update task status'
+    });
+  }
+};
+
+module.exports = { updateTaskStatus };
+// controllers/taskEditController.js
+const Task = require('../models/Task');
+const logTaskActivity = require('../utils/logTaskActivity');
+
+const updateTask = async (req, res) => {
+  try {
+    const { title, description, deadline, assignee, priority } = req.body;
+    const actorId = req.user.id;
+
+    const task = await Task.findById(req.params.taskId);
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: 'Task not found'
+      });
+    }
+
+    const changes = {};
+
+    if (title !== undefined && title !== task.title) {
+      changes.title = { from: task.title, to: title };
+      task.title = title;
+    }
+
+    if (description !== undefined && description !== task.description) {
+      changes.description = { from: task.description, to: description };
+      task.description = description;
+    }
+
+    if (deadline !== undefined && String(task.deadline) !== String(deadline)) {
+      changes.deadline = { from: task.deadline, to: deadline };
+      task.deadline = deadline;
+    }
+
+    if (assignee !== undefined && String(task.assignee) !== String(assignee)) {
+      changes.assignee = { from: task.assignee, to: assignee };
+      task.assignee = assignee;
+    }
+
+    if (priority !== undefined && task.priority !== priority) {
+      changes.priority = { from: task.priority, to: priority };
+      task.priority = priority;
+    }
+
+    await task.save();
+
+    if (Object.keys(changes).length > 0) {
+      await logTaskActivity({
+        taskId: task._id,
+        actorId,
+        actionType: 'TASK_UPDATED',
+        message: 'Updated task details',
+        metadata: { changes }
+      });
+    }
+
+    const updatedTask = await Task.findById(task._id)
+      .populate('assignee', 'fullName email');
+
+    return res.json({
+      success: true,
+      data: updatedTask
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update task'
+    });
+  }
+};
+
+module.exports = { updateTask };
+// controllers/taskCommentController.js
+const logTaskActivity = require('../utils/logTaskActivity');
+
+const addCommentToTask = async (req, res) => {
+  try {
+    const { message } = req.body;
+    const task = req.task;
+    const actorId = req.user.id;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Comment message is required'
+      });
+    }
+
+    task.comments.push({
+      author: actorId,
+      message: message.trim()
+    });
+
+    await task.save();
+
+    await logTaskActivity({
+      taskId: task._id,
+      actorId,
+      actionType: 'COMMENT_ADDED',
+      message: 'Added a comment',
+      metadata: {
+        commentPreview: message.trim().slice(0, 120)
+      }
+    });
+
+    const updatedTask = await task.populate([
+      { path: 'comments.author', select: 'fullName email' }
+    ]);
+
+    return res.status(201).json({
+      success: true,
+      data: updatedTask
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to add comment'
+    });
+  }
+};// controllers/activityController.js
+const ActivityLog = require('../models/ActivityLog');
+
+const getTaskActivity = async (req, res) => {
+  try {
+    const { taskId } = req.params;
+
+    const activity = await ActivityLog.find({ task: taskId })
+      .populate('actor', 'fullName email')
+      .sort({ createdAt: -1 });
+
+    return res.json({
+      success: true,
+      data: activity
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch activity log'
+    });
+  }
+};
+
+module.exports = { getTaskActivity };
+// controllers/taskCommentController.js
+const logTaskActivity = require('../utils/logTaskActivity');
+
+const addCommentToTask = async (req, res) => {
+  try {
+    const { message } = req.body;
+    const task = req.task;
+    const actorId = req.user.id;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Comment message is required'
+      });
+    }
+
+    task.comments.push({
+      author: actorId,
+      message: message.trim()
+    });
+
+    await task.save();
+
+    await logTaskActivity({
+      taskId: task._id,
+      actorId,
+      actionType: 'COMMENT_ADDED',
+      message: 'Added a comment',
+      metadata: {
+        commentPreview: message.trim().slice(0, 120)
+      }
+    });
+
+    const updatedTask = await task.populate([
+      { path: 'comments.author', select: 'fullName email' }
+    ]);
+
+    return res.status(201).json({
+      success: true,
+      data: updatedTask
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to add comment'
+    });
+  }
+};
+// controllers/activityController.js
+const ActivityLog = require('../models/ActivityLog');
+
+const getTaskActivity = async (req, res) => {
+  try {
+    const { taskId } = req.params;
+
+    const activity = await ActivityLog.find({ task: taskId })
+      .populate('actor', 'fullName email')
+      .sort({ createdAt: -1 });
+
+    return res.json({
+      success: true,
+      data: activity
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch activity log'
+    });
+  }
+};
+
+module.exports = { getTaskActivity };
+// routes/taskRoutes.js
+const express = require('express');
+const router = express.Router();
+
+const { authenticateToken } = require('../middleware/auth');
+const { getTaskActivity } = require('../controllers/activityController');
+
+router.get('/tasks/:taskId/activity', authenticateToken, getTaskActivity);
+
+module.exports = router;
+// components/TaskActivityTimeline.jsx
+import React, { useEffect, useState } from 'react';
+import api from '../services/api';
+
+export default function TaskActivityTimeline({ taskId }) {
+  const [activity, setActivity] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchActivity = async () => {
+      try {
+        const res = await api.get(/tasks/${taskId}/activity);
+        setActivity(res.data.data || []);
+      } catch (error) {
+        console.error('Failed to load activity', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchActivity();
+  }, [taskId]);
+
+  if (loading) {
+    return <div className="text-sm text-slate-500">Loading activity...</div>;
+  }
+
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-4">
+        <h3 className="text-lg font-semibold text-slate-900">Activity</h3>
+        <p className="text-sm text-slate-600">
+          History of updates, status changes, and comments.
+        </p>
+      </div>
+
+      <div className="space-y-4">
+        {activity.length ? (
+          activity.map((item) => (
+            <div key={item._id} className="flex gap-3">
+              <div className="mt-2 h-2.5 w-2.5 rounded-full bg-teal-600" />
+              <div className="min-w-0 flex-1 rounded-xl bg-slate-50 p-3">
+                <p className="text-sm text-slate-800">
+                  <span className="font-semibold">
+                    {item.actor?.fullName || 'Unknown user'}
+                  </span>{' '}
+                  {item.message}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {new Date(item.createdAt).toLocaleString()}
+                </p>
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+            No activity recorded yet.
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
