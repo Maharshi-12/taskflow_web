@@ -1,0 +1,195 @@
+/ utils/taskStats.js
+export const isTaskOverdue = (task) => {
+  if (!task.deadline) return false;
+  if (task.status === 'Completed') return false;
+
+  return new Date(task.deadline).getTime() < Date.now();
+};
+
+export const getTaskStats = (tasks = []) => {
+  const totalTasks = tasks.length;
+  const completedTasks = tasks.filter(
+    (task) => task.status === 'Completed'
+  ).length;
+
+  const pendingTasks = tasks.filter(
+    (task) => task.status === 'Pending'
+  ).length;
+
+  const overdueTasks = tasks.filter(isTaskOverdue).length;
+
+  return {
+    totalTasks,
+    completedTasks,
+    pendingTasks,
+    overdueTasks
+  };
+};
+// components/TaskStatsCards.jsx
+import React from 'react';
+
+const cards = [
+  {
+    key: 'totalTasks',
+    title: 'Total Tasks',
+    tone: 'border-slate-200 bg-white text-slate-900',
+    valueTone: 'text-slate-900',
+    subTone: 'text-slate-500'
+  },
+  {
+    key: 'completedTasks',
+    title: 'Completed',
+    tone: 'border-emerald-200 bg-emerald-50 text-emerald-900',
+    valueTone: 'text-emerald-700',
+    subTone: 'text-emerald-600'
+  },
+  {
+    key: 'pendingTasks',
+    title: 'Pending',
+    tone: 'border-amber-200 bg-amber-50 text-amber-900',
+    valueTone: 'text-amber-700',
+    subTone: 'text-amber-600'
+  },
+  {
+    key: 'overdueTasks',
+    title: 'Overdue',
+    tone: 'border-red-200 bg-red-50 text-red-900',
+    valueTone: 'text-red-700',
+    subTone: 'text-red-600'
+  }
+];
+
+export default function TaskStatsCards({ stats }) {
+  return (
+    <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {cards.map((card) => (
+        <article
+          key={card.key}
+          className={rounded-2xl border p-5 shadow-sm ${card.tone}}
+        >
+          <p className={text-sm font-medium ${card.subTone}}>
+            {card.title}
+          </p>
+          <p className={mt-3 text-3xl font-bold ${card.valueTone}}>
+            {stats[card.key]}
+          </p>
+        </article>
+      ))}
+    </section>
+  );
+}
+// pages/UserDashboard.jsx
+import React, { useEffect, useMemo, useState } from 'react';
+import api from '../services/api';
+import TaskStatsCards from '../components/TaskStatsCards';
+import { getTaskStats } from '../utils/taskStats';
+
+export default function UserDashboard() {
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchTasks = async () => {
+      try {
+        const res = await api.get('/tasks');
+        setTasks(res.data.data || []);
+      } catch (error) {
+        console.error('Failed to fetch tasks', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchTasks();
+  }, []);
+
+  const stats = useMemo(() => getTaskStats(tasks), [tasks]);
+
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-slate-100 p-6">
+        <div className="mx-auto max-w-7xl text-slate-600">
+          Loading dashboard...
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-slate-100 p-6">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <section className="rounded-2xl bg-white p-6 shadow-sm">
+          <h1 className="text-2xl font-bold text-slate-900">
+            User Dashboard
+          </h1>
+          <p className="mt-1 text-sm text-slate-600">
+            Monitor task progress, pending work, and overdue items.
+          </p>
+        </section>
+
+        <TaskStatsCards stats={stats} />
+
+        <section className="rounded-2xl bg-white p-6 shadow-sm">
+          <h2 className="text-lg font-semibold text-slate-900">
+            Recent Task Overview
+          </h2>
+          <div className="mt-4 space-y-3">
+            {tasks.slice(0, 5).map((task) => (
+              <div
+                key={task._id}
+                className="flex flex-col justify-between gap-2 rounded-xl border border-slate-200 p-4 md:flex-row md:items-center"
+              >
+                <div>
+                  <p className="font-medium text-slate-900">{task.title}</p>
+                  <p className="text-sm text-slate-500">
+                    Status: {task.status}
+                  </p>
+                </div>
+
+                <div className="text-sm text-slate-500">
+                  {task.deadline
+                    ? Due: ${new Date(task.deadline).toLocaleDateString()}
+                    : 'No deadline'}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
+// controllers/dashboardController.js
+const Task = require('../models/Task');
+
+const getDashboardStats = async (req, res) => {
+  try {
+    const tasks = await Task.find();
+
+    const now = new Date();
+
+    const totalTasks = tasks.length;
+    const completedTasks = tasks.filter(t => t.status === 'Completed').length;
+    const pendingTasks = tasks.filter(t => t.status === 'Pending').length;
+    const overdueTasks = tasks.filter(
+      t => t.deadline && t.status !== 'Completed' && new Date(t.deadline) < now
+    ).length;
+
+    return res.json({
+      success: true,
+      data: {
+        totalTasks,
+        completedTasks,
+        pendingTasks,
+        overdueTasks
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch dashboard stats'
+    });
+  }
+};
+
+module.exports = { getDashboardStats };
