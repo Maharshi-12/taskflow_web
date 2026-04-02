@@ -1,0 +1,158 @@
+/ utils/validators.js
+export const validateTaskForm = (values) => {
+  const errors = {};
+
+  if (!values.title || !values.title.trim()) {
+    errors.title = 'Title is required';
+  } else if (values.title.trim().length > 200) {
+    errors.title = 'Title must be under 200 characters';
+  }
+
+  if (values.description && values.description.trim().length > 2000) {
+    errors.description = 'Description must be under 2000 characters';
+  }
+
+  const allowedStatuses = ['Pending', 'In Progress', 'Completed'];
+  if (values.status && !allowedStatuses.includes(values.status)) {
+    errors.status = 'Invalid status selected';
+  }
+
+  if (values.deadline && Number.isNaN(new Date(values.deadline).getTime())) {
+    errors.deadline = 'Invalid deadline';
+  }
+
+  return errors;
+};
+// example submit handling
+const handleSubmit = async (e) => {
+  e.preventDefault();
+
+  const normalized = {
+    ...formValues,
+    title: formValues.title.trim(),
+    description: formValues.description?.trim() || ''
+  };
+
+  const errors = validateTaskForm(normalized);
+  setErrors(errors);
+
+  if (Object.keys(errors).length > 0) return;
+
+  await api.post('/tasks', normalized);
+};
+// validators/taskValidators.js
+const { z } = require('zod');
+
+const taskSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(2000).optional().or(z.literal('')),
+  status: z.enum(['Pending', 'In Progress', 'Completed']).optional(),
+  priority: z.enum(['Low', 'Medium', 'High']).optional(),
+  deadline: z.string().datetime().optional().or(z.literal('')),
+  team: z.string().min(1),
+  assignee: z.string().optional().nullable()
+});
+
+module.exports = { taskSchema };
+// middleware/validateBody.js
+const validateBody = (schema) => (req, res, next) => {
+  const result = schema.safeParse(req.body);
+
+  if (!result.success) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: result.error.flatten()
+    });
+  }
+
+  req.validatedBody = result.data;
+  next();
+};
+
+module.exports = validateBody;
+// route usage
+router.post(
+  '/tasks',
+  authenticateToken,
+  validateBody(taskSchema),
+  createTask
+);
+const taskSchema = new mongoose.Schema({
+  title: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 200
+  },
+  description: {
+    type: String,
+    trim: true,
+    maxlength: 2000
+  },
+  status: {
+    type: String,
+    enum: ['Pending', 'In Progress', 'Completed'],
+    default: 'Pending'
+  }
+});
+// example query validation
+const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 100);
+
+if (!mongoose.Types.ObjectId.isValid(req.params.taskId)) {
+  return res.status(400).json({
+    success: false,
+    message: 'Invalid task ID'
+  });
+}
+const allowedMimeTypes = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'application/pdf'
+];
+
+if (!allowedMimeTypes.includes(req.file.mimetype)) {
+  return res.status(400).json({
+    success: false,
+    message: 'Unsupported file type'
+  });
+}
+
+if (req.file.size > 5 * 1024 * 1024) {
+  return res.status(400).json({
+    success: false,
+    message: 'File too large'
+  });
+}
+router.post(
+  '/tasks',
+  authenticateToken,
+  validateBody(taskSchema),
+  async (req, res) => {
+    try {
+      const data = req.validatedBody;
+
+      const task = await Task.create({
+        title: data.title.trim(),
+        description: data.description?.trim() || '',
+        status: data.status || 'Pending',
+        priority: data.priority || 'Medium',
+        deadline: data.deadline || null,
+        team: data.team,
+        assignee: data.assignee || null
+      });
+
+      return res.status(201).json({
+        success: true,
+        data: task
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to create task'
+      });
+    }
+  }
+);
