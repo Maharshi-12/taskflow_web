@@ -1,0 +1,366 @@
+// models/Task.js
+const mongoose = require('mongoose');
+
+const attachmentSchema = new mongoose.Schema(
+  {
+    originalName: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    storedName: {
+      type: String,
+      required: true
+    },
+    mimeType: {
+      type: String,
+      required: true
+    },
+    size: {
+      type: Number,
+      required: true
+    },
+    path: {
+      type: String,
+      required: true
+    },
+    uploadedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    }
+  },
+  { timestamps: true }
+);
+
+const taskSchema = new mongoose.Schema(
+  {
+    title: { type: String, required: true, trim: true },
+    description: { type: String, trim: true },
+    team: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', required: true },
+    assignee: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    status: {
+      type: String,
+      enum: ['Pending', 'In Progress', 'Completed'],
+      default: 'Pending'
+    },
+    attachments: [attachmentSchema]
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model('Task', taskSchema);
+// middleware/uploadTaskAttachment.js
+const multer = require('multer');
+const path = require('path');
+const crypto = require('crypto');
+const fs = require('fs');
+
+const uploadDir = path.join(__dirname, '..', 'uploads', 'task-attachments');
+
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const allowedMimeTypes = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+];
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const safeName = crypto.randomBytes(16).toString('hex') + ext;
+    cb(null, safeName);
+  }
+});
+
+const fileFilter = (req, file, cb) => {
+  if (!allowedMimeTypes.includes(file.mimetype)) {
+    return cb(new Error('Unsupported file type'), false);
+  }
+  cb(null, true);
+};
+
+const uploadTaskAttachment = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024
+  }
+});
+
+module.exports = uploadTaskAttachment;
+// middleware/canAccessTask.js
+const Task = require('../models/Task');
+const TeamMember = require('../models/TeamMember');
+
+const canAccessTask = async (req, res, next) => {
+  try {
+    const { taskId } = req.params;
+    const userId = req.user.id;
+
+    const task = await Task.findById(taskId);
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: 'Task not found'
+      });
+    }
+
+    const membership = await TeamMember.findOne({
+      team: task.team,
+      user: userId
+    });
+
+    if (!membership) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not allowed to access this task'
+      });
+    }
+
+    req.task = task;
+    next();
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Authorization failed'
+    });
+  }
+};
+
+module.exports = canAccessTask;
+// controllers/taskAttachmentController.js
+const path = require('path');
+const Task = require('../models/Task');
+const logTaskActivity = require('../utils/logTaskActivity');
+
+const uploadAttachmentToTask = async (req, res) => {
+  try {
+    const task = req.task;
+    const userId = req.user.id;
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No file uploaded'
+      });
+    }
+
+    const attachment = {
+      originalName: req.file.originalname,
+      storedName: req.file.filename,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      path: req.file.path,
+      uploadedBy: userId
+    };
+
+    task.attachments.push(attachment);
+    await task.save();
+
+    await logTaskActivity({
+      taskId: task._id,
+      actorId: userId,
+      actionType: 'TASK_UPDATED',
+      message: Uploaded attachment "${req.file.originalname}",
+      metadata: {
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        size: req.file.size
+      }
+    });
+
+    const updatedTask = await Task.findById(task._id)
+      .populate('attachments.uploadedBy', 'fullName email');
+
+    return res.status(201).json({
+      success: true,
+      message: 'Attachment uploaded successfully',
+      data: updatedTask
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to upload attachment'
+    });
+  }
+};
+
+module.exports = { uploadAttachmentToTask };
+// controllers/taskAttachmentDownloadController.js
+const fs = require('fs');
+const path = require('path');
+const Task = require('../models/Task');
+
+const downloadTaskAttachment = async (req, res) => {
+  try {
+    const { taskId, attachmentId } = req.params;
+    const task = await Task.findById(taskId);
+
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: 'Task not found'
+      });
+    }
+
+    const attachment = task.attachments.id(attachmentId);
+    if (!attachment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Attachment not found'
+      });
+    }
+
+    const filePath = path.resolve(attachment.path);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        success: false,
+        message: 'File missing from storage'
+      });
+    }
+
+    return res.download(filePath, attachment.originalName);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to download attachment'
+    });
+  }
+};
+
+module.exports = { downloadTaskAttachment };
+// routes/taskAttachmentRoutes.js
+const express = require('express');
+const router = express.Router();
+
+const { authenticateToken } = require('../middleware/auth');
+const canAccessTask = require('../middleware/canAccessTask');
+const uploadTaskAttachment = require('../middleware/uploadTaskAttachment');
+const { uploadAttachmentToTask } = require('../controllers/taskAttachmentController');
+const { downloadTaskAttachment } = require('../controllers/taskAttachmentDownloadController');
+
+router.post(
+  '/tasks/:taskId/attachments',
+  authenticateToken,
+  canAccessTask,
+  uploadTaskAttachment.single('file'),
+  uploadAttachmentToTask
+);
+
+router.get(
+  '/tasks/:taskId/attachments/:attachmentId',
+  authenticateToken,
+  canAccessTask,
+  downloadTaskAttachment
+);
+
+module.exports = router;
+// components/TaskAttachments.jsx
+import React, { useState } from 'react';
+import api from '../services/api';
+
+export default function TaskAttachments({ task, onTaskUpdated }) {
+  const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+
+  const handleUpload = async (e) => {
+    e.preventDefault();
+    if (!file) return;
+
+    try {
+      setUploading(true);
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await api.post(
+        /tasks/${task._id}/attachments,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'multipart/form-data'
+          }
+        }
+      );
+
+      onTaskUpdated(res.data.data);
+      setFile(null);
+    } catch (error) {
+      console.error('Upload failed', error);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-4">
+        <h3 className="text-lg font-semibold text-slate-900">Attachments</h3>
+        <p className="text-sm text-slate-600">
+          Upload images or documents related to this task.
+        </p>
+      </div>
+
+      <form onSubmit={handleUpload} className="space-y-4">
+        <input
+          type="file"
+          accept=".jpg,.jpeg,.png,.webp,.pdf,.doc,.docx"
+          onChange={(e) => setFile(e.target.files?.[0] || null)}
+          className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm"
+        />
+
+        <button
+          type="submit"
+          disabled={!file || uploading}
+          className="rounded-xl bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {uploading ? 'Uploading...' : 'Upload file'}
+        </button>
+      </form>
+
+      <div className="mt-6 space-y-3">
+        {task.attachments?.length ? (
+          task.attachments.map((attachment) => (
+            <div
+              key={attachment._id}
+              className="flex flex-col gap-2 rounded-xl border border-slate-200 p-4 md:flex-row md:items-center md:justify-between"
+            >
+              <div>
+                <p className="font-medium text-slate-900">
+                  {attachment.originalName}
+                </p>
+                <p className="text-xs text-slate-500">
+                  {(attachment.size / 1024).toFixed(1)} KB · {attachment.mimeType}
+                </p>
+              </div>
+
+              <a
+                href={http://localhost:5000/api/tasks/${task._id}/attachments/${attachment._id}}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-medium text-teal-700"
+              >
+                Download
+              </a>
+            </div>
+          ))
+        ) : (
+          <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+            No attachments uploaded yet.
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
