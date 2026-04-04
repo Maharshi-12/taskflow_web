@@ -1,0 +1,207 @@
+/ config/uploadPolicy.js
+module.exports = {
+  allowedMimeTypes: [
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ],
+  maxFileSizeBytes: 5 * 1024 * 1024
+};
+// middleware/secureTaskUpload.js
+const multer = require('multer');
+const path = require('path');
+const crypto = require('crypto');
+const fs = require('fs');
+const { allowedMimeTypes, maxFileSizeBytes } = require('../config/uploadPolicy');
+
+const uploadRoot = path.join(__dirname, '..', 'private_uploads', 'task_attachments');
+
+if (!fs.existsSync(uploadRoot)) {
+  fs.mkdirSync(uploadRoot, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadRoot);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const safeFileName = ${crypto.randomBytes(16).toString('hex')}${ext};
+    cb(null, safeFileName);
+  }
+});
+
+const fileFilter = (req, file, cb) => {
+  if (!allowedMimeTypes.includes(file.mimetype)) {
+    return cb(new Error('Unsupported file type'), false);
+  }
+  cb(null, true);
+};
+
+const secureTaskUpload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: maxFileSizeBytes,
+    files: 1
+  }
+});
+
+module.exports = secureTaskUpload;
+// utils/sanitizeFileName.js
+const path = require('path');
+
+const sanitizeFileName = (name = '') => {
+  const base = path.basename(name);
+  return base.replace(/[^w.- ]+/g, '_').slice(0, 150);
+};
+
+module.exports = sanitizeFileName;
+// controllers/taskAttachmentController.js
+const Task = require('../models/Task');
+const sanitizeFileName = require('../utils/sanitizeFileName');
+
+const uploadAttachmentToTask = async (req, res) => {
+  try {
+    const task = req.task;
+    const userId = req.user.id;
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No file uploaded'
+      });
+    }
+
+    const attachment = {
+      originalName: sanitizeFileName(req.file.originalname),
+      storedName: req.file.filename,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      path: req.file.path,
+      uploadedBy: userId
+    };
+
+    task.attachments.push(attachment);
+    await task.save();
+
+    const updatedTask = await Task.findById(task._id)
+      .populate('attachments.uploadedBy', 'fullName email');
+
+    return res.status(201).json({
+      success: true,
+      message: 'Attachment uploaded successfully',
+      data: updatedTask
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to upload attachment'
+    });
+  }
+};
+
+module.exports = { uploadAttachmentToTask };
+// controllers/taskAttachmentDownloadController.js
+const fs = require('fs');
+const path = require('path');
+const Task = require('../models/Task');
+
+const downloadTaskAttachment = async (req, res) => {
+  try {
+    const { taskId, attachmentId } = req.params;
+    const task = await Task.findById(taskId);
+
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: 'Task not found'
+      });
+    }
+
+    const attachment = task.attachments.id(attachmentId);
+    if (!attachment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Attachment not found'
+      });
+    }
+
+    const resolvedPath = path.resolve(attachment.path);
+
+    if (!fs.existsSync(resolvedPath)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Stored file not found'
+      });
+    }
+
+    res.setHeader('Content-Type', attachment.mimeType);
+    return res.download(resolvedPath, attachment.originalName);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to download file'
+    });
+  }
+};
+
+module.exports = { downloadTaskAttachment };
+// routes/taskAttachmentRoutes.js
+const express = require('express');
+const router = express.Router();
+
+const { authenticateToken } = require('../middleware/auth');
+const canAccessTask = require('../middleware/canAccessTask');
+const secureTaskUpload = require('../middleware/secureTaskUpload');
+const { uploadAttachmentToTask } = require('../controllers/taskAttachmentController');
+const { downloadTaskAttachment } = require('../controllers/taskAttachmentDownloadController');
+
+router.post(
+  '/tasks/:taskId/attachments',
+  authenticateToken,
+  canAccessTask,
+  secureTaskUpload.single('file'),
+  uploadAttachmentToTask
+);
+
+router.get(
+  '/tasks/:taskId/attachments/:attachmentId',
+  authenticateToken,
+  canAccessTask,
+  downloadTaskAttachment
+);
+
+module.exports = router;
+// middleware/uploadErrorHandler.js
+const uploadErrorHandler = (err, req, res, next) => {
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({
+      success: false,
+      message: 'File exceeds the 5 MB limit'
+    });
+  }
+
+  if (err && err.message === 'Unsupported file type') {
+    return res.status(400).json({
+      success: false,
+      message: 'Only JPG, PNG, WEBP, PDF, DOC, and DOCX files are allowed'
+    });
+  }
+
+  next(err);
+};
+
+module.exports = uploadErrorHandler;
+<input
+  type="file"
+  accept=".jpg,.jpeg,.png,.webp,.pdf,.doc,.docx"
+  onChange={(e) => setFile(e.target.files?.[0] || null)}
+/>
+
+<p className="text-xs text-slate-500">
+  Allowed: JPG, PNG, WEBP, PDF, DOC, DOCX · Max 5 MB
+</p>
