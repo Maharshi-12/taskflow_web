@@ -1,0 +1,264 @@
+// models/Task.js
+const mongoose = require('mongoose');
+
+const taskSchema = new mongoose.Schema(
+  {
+    title: {
+      type: String,
+      required: true,
+      trim: true,
+      minlength: 3,
+      maxlength: 200
+    },
+    description: {
+      type: String,
+      trim: true,
+      maxlength: 2000,
+      default: ''
+    },
+    status: {
+      type: String,
+      enum: ['Pending', 'In Progress', 'Completed'],
+      default: 'Pending'
+    },
+    priority: {
+      type: String,
+      enum: ['Low', 'Medium', 'High'],
+      default: 'Medium'
+    },
+    team: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Team',
+      required: true
+    },
+    assignee: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null
+    },
+    deadline: {
+      type: Date,
+      default: null
+    }
+  },
+  {
+    timestamps: true,
+    strict: 'throw'
+  }
+);
+
+module.exports = mongoose.model('Task', taskSchema);
+// middleware/validateTaskInput.js
+const mongoose = require('mongoose');
+
+const allowedStatuses = ['Pending', 'In Progress', 'Completed'];
+const allowedPriorities = ['Low', 'Medium', 'High'];
+
+const validateTaskInput = (req, res, next) => {
+  const { title, description, status, priority, team, assignee, deadline } = req.body;
+
+  if (title !== undefined) {
+    if (typeof title !== 'string' || title.trim().length < 3 || title.trim().length > 200) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid title'
+      });
+    }
+  }
+
+  if (description !== undefined) {
+    if (typeof description !== 'string' || description.length > 2000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid description'
+      });
+    }
+  }
+
+  if (status !== undefined && !allowedStatuses.includes(status)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid status'
+    });
+  }
+
+  if (priority !== undefined && !allowedPriorities.includes(priority)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid priority'
+    });
+  }
+
+  if (team !== undefined && !mongoose.Types.ObjectId.isValid(team)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid team id'
+    });
+  }
+
+  if (assignee !== undefined && assignee !== null && !mongoose.Types.ObjectId.isValid(assignee)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid assignee id'
+    });
+  }
+
+  if (deadline !== undefined && deadline !== null && Number.isNaN(Date.parse(deadline))) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid deadline'
+    });
+  }
+
+  next();
+};
+
+module.exports = validateTaskInput;
+// BAD
+const tasks = await Task.find(req.query);
+
+// GOOD
+const query = {};
+
+if (req.query.status && ['Pending', 'In Progress', 'Completed'].includes(req.query.status)) {
+  query.status = req.query.status;
+}
+
+if (req.query.priority && ['Low', 'Medium', 'High'].includes(req.query.priority)) {
+  query.priority = req.query.priority;
+}
+
+const tasks = await Task.find(query);
+// utils/pickAllowedFields.js
+const pickAllowedFields = (source, allowedFields) => {
+  const output = {};
+
+  for (const field of allowedFields) {
+    if (Object.prototype.hasOwnProperty.call(source, field)) {
+      output[field] = source[field];
+    }
+  }
+
+  return output;
+};
+
+module.exports = pickAllowedFields;
+// controllers/taskController.js
+const Task = require('../models/Task');
+const pickAllowedFields = require('../utils/pickAllowedFields');
+
+const updateTask = async (req, res) => {
+  try {
+    const { taskId } = req.params;
+
+    if (!require('mongoose').Types.ObjectId.isValid(taskId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid task id'
+      });
+    }
+
+    const updates = pickAllowedFields(req.body, [
+      'title',
+      'description',
+      'status',
+      'priority',
+      'assignee',
+      'deadline'
+    ]);
+
+    const task = await Task.findByIdAndUpdate(
+      taskId,
+      { $set: updates },
+      {
+        new: true,
+        runValidators: true,
+        context: 'query'
+      }
+    );
+
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: 'Task not found'
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: task
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update task'
+    });
+  }
+};
+
+module.exports = { updateTask };
+// db/mongoose.js
+const mongoose = require('mongoose');
+
+mongoose.set('strictQuery', true);
+
+const connectDB = async () => {
+  await mongoose.connect(process.env.MONGODB_URI);
+};
+
+module.exports = connectDB;
+// middleware/rejectMongoOperators.js
+const containsDangerousKeys = (obj) => {
+  if (!obj || typeof obj !== 'object') return false;
+
+  for (const key of Object.keys(obj)) {
+    if (key.startsWith('$') || key.includes('.')) {
+      return true;
+    }
+
+    if (typeof obj[key] === 'object' && containsDangerousKeys(obj[key])) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const rejectMongoOperators = (req, res, next) => {
+  if (containsDangerousKeys(req.body) || containsDangerousKeys(req.query) || containsDangerousKeys(req.params)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid input structure'
+    });
+  }
+
+  next();
+};
+
+module.exports = rejectMongoOperators;
+const mongoose = require('mongoose');
+
+if (!mongoose.Types.ObjectId.isValid(req.params.taskId)) {
+  return res.status(400).json({
+    success: false,
+    message: 'Invalid task id'
+  });
+}
+// routes/taskRoutes.js
+const express = require('express');
+const router = express.Router();
+
+const { authenticateToken } = require('../middleware/auth');
+const rejectMongoOperators = require('../middleware/rejectMongoOperators');
+const validateTaskInput = require('../middleware/validateTaskInput');
+const { updateTask } = require('../controllers/taskController');
+
+router.patch(
+  '/tasks/:taskId',
+  authenticateToken,
+  rejectMongoOperators,
+  validateTaskInput,
+  updateTask
+);
+
+module.exports = router;
