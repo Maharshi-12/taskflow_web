@@ -1,0 +1,173 @@
+/ models/Task.js
+const mongoose = require('mongoose');
+
+const taskSchema = new mongoose.Schema(
+  {
+    title: { type: String, required: true, trim: true },
+    description: { type: String, trim: true, default: '' },
+    status: {
+      type: String,
+      enum: ['Pending', 'In Progress', 'Completed'],
+      default: 'Pending'
+    },
+    priority: {
+      type: String,
+      enum: ['Low', 'Medium', 'High'],
+      default: 'Medium'
+    },
+    team: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Team',
+      required: true
+    },
+    assignee: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null
+    },
+    deadline: {
+      type: Date,
+      default: null
+    }
+  },
+  { timestamps: true }
+);
+
+// Single-field indexes
+taskSchema.index({ team: 1 });
+taskSchema.index({ assignee: 1 });
+taskSchema.index({ status: 1 });
+taskSchema.index({ deadline: 1 });
+taskSchema.index({ createdAt: -1 });
+
+// Compound indexes for common list/filter patterns
+taskSchema.index({ team: 1, status: 1, createdAt: -1 });
+taskSchema.index({ assignee: 1, status: 1, deadline: 1 });
+taskSchema.index({ status: 1, deadline: 1 });
+
+// Text index for keyword search
+taskSchema.index({
+  title: 'text',
+  description: 'text'
+});
+
+module.exports = mongoose.model('Task', taskSchema);
+// models/Team.js
+const mongoose = require('mongoose');
+
+const teamSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    code: { type: String, trim: true, unique: true, sparse: true },
+    description: { type: String, trim: true, default: '' }
+  },
+  { timestamps: true }
+);
+
+teamSchema.index({ name: 1 });
+teamSchema.index({ createdAt: -1 });
+teamSchema.index({
+  name: 'text',
+  code: 'text',
+  description: 'text'
+});
+
+module.exports = mongoose.model('Team', teamSchema);
+// models/ActivityLog.js
+const mongoose = require('mongoose');
+
+const activityLogSchema = new mongoose.Schema(
+  {
+    task: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Task',
+      required: true
+    },
+    actor: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    actionType: {
+      type: String,
+      enum: ['TASK_CREATED', 'TASK_UPDATED', 'STATUS_CHANGED', 'COMMENT_ADDED'],
+      required: true
+    },
+    message: { type: String, required: true, trim: true },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
+  },
+  { timestamps: true }
+);
+
+activityLogSchema.index({ task: 1, createdAt: -1 });
+activityLogSchema.index({ actor: 1, createdAt: -1 });
+activityLogSchema.index({ createdAt: -1 });
+
+module.exports = mongoose.model('ActivityLog', activityLogSchema);
+// Cursor-based pagination example for activity timeline
+const limit = 20;
+const cursor = req.query.cursor;
+
+const query = {};
+if (cursor) {
+  query.createdAt = { $lt: new Date(cursor) };
+}
+
+const activity = await ActivityLog.find(query)
+  .sort({ createdAt: -1 })
+  .limit(limit)
+  .lean();
+// controllers/searchController.js
+const searchTasksAndTeams = async (req, res) => {
+  try {
+    const q = (req.query.q || '').trim();
+
+    if (!q) {
+      return res.json({
+        success: true,
+        data: { tasks: [], teams: [] }
+      });
+    }
+
+    const [tasks, teams] = await Promise.all([
+      Task.find(
+        { $text: { $search: q } },
+        { score: { $meta: 'textScore' }, title: 1, description: 1, status: 1, team: 1, assignee: 1 }
+      )
+        .sort({ score: { $meta: 'textScore' } })
+        .limit(20)
+        .lean(),
+
+      Team.find(
+        { $text: { $search: q } },
+        { score: { $meta: 'textScore' }, name: 1, code: 1, description: 1 }
+      )
+        .sort({ score: { $meta: 'textScore' } })
+        .limit(20)
+        .lean()
+    ]);
+
+    return res.json({
+      success: true,
+      data: { tasks, teams }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Search failed'
+    });
+  }
+};
+const taskStats = await Task.aggregate([
+  {
+    $match: {
+      team: teamObjectId
+    }
+  },
+  {
+    $group: {
+      _id: '$status',
+      count: { $sum: 1 }
+    }
+  }
+]);
