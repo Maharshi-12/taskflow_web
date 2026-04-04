@@ -1,0 +1,90 @@
+// tests/taskRoutes.test.js
+const request = require('supertest');
+const app = require('../app');
+
+describe('Task workflow routes', () => {
+  let token;
+  let taskId;
+
+  beforeAll(async () => {
+    const loginRes = await request(app)
+      .post('/api/auth/login')
+      .send({
+        email: 'user@example.com',
+        password: 'Password123!'
+      });
+
+    token = loginRes.body.token;
+  });
+
+  it('should create a new task', async () => {
+    const res = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', Bearer ${token})
+      .send({
+        title: 'Integration test task',
+        description: 'Testing task creation',
+        status: 'Pending',
+        priority: 'Medium',
+        team: '661000000000000000000001'
+      });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.data.title).toBe('Integration test task');
+    taskId = res.body.data._id;
+  });
+
+  it('should update task status', async () => {
+    const res = await request(app)
+      .patch(/api/tasks/${taskId}/status)
+      .set('Authorization', Bearer ${token})
+      .send({ status: 'In Progress' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.status).toBe('In Progress');
+  });
+
+  it('should reject invalid status', async () => {
+    const res = await request(app)
+      .patch(/api/tasks/${taskId}/status)
+      .set('Authorization', Bearer ${token})
+      .send({ status: 'InvalidStatus' });
+
+    expect(res.statusCode).toBe(400);
+  });
+});
+it('should add a comment and create activity', async () => {
+  const commentRes = await request(app)
+    .post(/api/tasks/${taskId}/comments)
+    .set('Authorization', Bearer ${token})
+    .send({ message: 'This is a system test comment' });
+
+  expect(commentRes.statusCode).toBe(201);
+
+  const activityRes = await request(app)
+    .get(/api/tasks/${taskId}/activity)
+    .set('Authorization', Bearer ${token});
+
+  expect(activityRes.statusCode).toBe(200);
+  expect(
+    activityRes.body.data.some(item => item.actionType === 'COMMENT_ADDED')
+  ).toBe(true);
+});
+// e2e/task-workflow.spec.js
+const { test, expect } = require('@playwright/test');
+
+test('user updates task workflow from dashboard', async ({ page }) => {
+  await page.goto('http://localhost:3000/login');
+
+  await page.fill('input[name="email"]', 'user@example.com');
+  await page.fill('input[name="password"]', 'Password123!');
+  await page.click('button[type="submit"]');
+
+  await expect(page).toHaveURL(/dashboard/);
+
+  await page.click('text=Integration test task');
+  await page.selectOption('select[name="status"]', 'Completed');
+
+  await expect(page.locator('text=Completed')).toBeVisible();
+  await expect(page.locator('text=Activity')).toBeVisible();
+});
